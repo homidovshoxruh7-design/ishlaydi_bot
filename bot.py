@@ -1,77 +1,120 @@
 import telebot
-from telebot import types 
 from telebot import types
+import sqlite3
 
-# 1. BOT TOKENI
-TOKEN = '8419362381:AAER0Nws1WpL6zyfDVGJNFPa8q-Jvw9gTWM'
-bot = telebot.TeleBot(TOKEN, parse_mode="HTML")
+# --- 1. SOZLAMALAR ---
+# Siz bergan @Ishlaydi_bot tokeni
+TOKEN = "8419362381:AAER0Nws1WpL6zyfDVGJNFPa8q-Jvw9gTWM" 
 
-# 2. KANAL USERNAMELARI (@ belgisiz yozing)
-KINO_USER = "Ishlaydi_Kino"   
-BOZOR_USER = "Ishlaydi_Bozor" 
+# Kanallaringiz usernamesi (@ belgisiz)
+KINO_USER = "Ishlaydi_Kino"
+BOZOR_USER = "Ishlaydi_Bozor"
 
-def get_status(user_id):
-    """Har bir kanalni alohida tekshirib ✅ yoki ❌ qaytaradi"""
-    res = {"k1": False, "k2": False}
+# Admin va takliflar soni
+ADMIN_USER = "Zshoxruh"
+REFS_NEEDED = 10 
+# ---------------------
+
+bot = telebot.TeleBot(TOKEN)
+
+# --- 2. MA'LUMOTLAR BAZASI ---
+def init_db():
+    conn = sqlite3.connect('ishlaydi_bot_main.db')
+    cursor = conn.cursor()
+    cursor.execute('''CREATE TABLE IF NOT EXISTS users 
+                      (user_id INTEGER PRIMARY KEY, invited_by INTEGER, ref_count INTEGER DEFAULT 0)''')
+    conn.commit()
+    conn.close()
+
+def manage_user(user_id, referrer_id=None):
+    conn = sqlite3.connect('ishlaydi_bot_main.db')
+    cursor = conn.cursor()
+    cursor.execute("SELECT user_id FROM users WHERE user_id = ?", (user_id,))
+    if not cursor.fetchone():
+        cursor.execute("INSERT INTO users (user_id, invited_by) VALUES (?, ?)", (user_id, referrer_id))
+        if referrer_id and int(referrer_id) != user_id:
+            cursor.execute("UPDATE users SET ref_count = ref_count + 1 WHERE user_id = ?", (referrer_id,))
+    conn.commit()
+    conn.close()
+
+def get_refs(user_id):
+    conn = sqlite3.connect('ishlaydi_bot_main.db')
+    cursor = conn.cursor()
+    cursor.execute("SELECT ref_count FROM users WHERE user_id = ?", (user_id,))
+    res = cursor.fetchone()
+    conn.close()
+    return res[0] if res else 0
+
+init_db()
+
+# --- 3. OBUNA TEKSHIRUVI ---
+def check_sub(user_id):
     try:
-        # 1-kanal tekshiruvi
-        s1 = bot.get_chat_member(f"@{KINO_USER}", user_id).status
-        res["k1"] = s1 in ['member', 'administrator', 'creator']
-        
-        # 2-kanal tekshiruvi
-        s2 = bot.get_chat_member(f"@{BOZOR_USER}", user_id).status
-        res["k2"] = s2 in ['member', 'administrator', 'creator']
-    except Exception as e:
-        # Agar xato bersa (masalan bot admin bo'lmasa) False qoladi
-        print(f"Xatolik: {e}")
-    return res
+        r1 = bot.get_chat_member(f"@{KINO_USER}", user_id)
+        r2 = bot.get_chat_member(f"@{BOZOR_USER}", user_id)
+        statuslar = ["creator", "administrator", "member"]
+        return r1.status in statuslar and r2.status in statuslar
+    except:
+        return False
+
+# --- 4. ASOSIY XABAR (SALOM BILAN) ---
+def send_welcome(chat_id, user_id, name):
+    refs = get_refs(user_id)
+    bot_info = bot.get_me()
+    link = f"https://t.me/{bot_info.username}?start={user_id}"
+    share = f"https://t.me/share/url?url={link}&text=Bu botda hamma yangi kinolar bor ekan, kirib ko'r! 🎬🚀"
+
+    markup = types.InlineKeyboardMarkup(row_width=1)
+    markup.add(
+        types.InlineKeyboardButton("🎬 1-kanal (Kino)", url=f"https://t.me/{KINO_USER}"),
+        types.InlineKeyboardButton("🛍 2-kanal (Bozor)", url=f"https://t.me/{BOZOR_USER}"),
+        types.InlineKeyboardButton("🚀 Do'stlarimga yuborish", url=share),
+        types.InlineKeyboardButton("👤 Reklama va hamkorlik", url=f"https://t.me/{ADMIN_USER}"),
+        types.InlineKeyboardButton("🔄 Tekshirish", callback_data="check")
+    )
+    
+    text = (f"<b>Assalomu alaykum, hurmatli {name}!</b> 👋\n\n"
+            f"Botimizga xush kelibsiz! Botni faollashtirish uchun:\n\n"
+            f"✅ Yuqoridagi 2 ta kanalga obuna bo'ling\n"
+            f"✅ Botga kamida <b>{REFS_NEEDED} ta do'stingizni</b> taklif qiling\n\n"
+            f"📊 Natijangiz: <b>{refs} / {REFS_NEEDED}</b>\n"
+            f"📉 Yana <b>{max(0, REFS_NEEDED - refs)} ta</b> taklif kerak.\n\n"
+            f"<i>Hamkorlik uchun @{ADMIN_USER} ga yozing.</i>")
+    
+    bot.send_message(chat_id, text, parse_mode="HTML", reply_markup=markup)
 
 @bot.message_handler(commands=['start'])
 def start(message):
-    st = get_status(message.from_user.id)
+    uid = message.from_user.id
+    args = message.text.split()
+    ref = args[1] if len(args) > 1 and args[1].isdigit() else None
     
-    # Agar foydalanuvchi ikkalasiga ham a'zo bo'lgan bo'lsa
-    if st["k1"] and st["k2"]:
-        bot.send_message(message.chat.id, "🎉 <b>Xush kelibsiz!</b> Barcha obunalar tasdiqlandi. Botdan foydalanishingiz mumkin.")
-    else:
-        # Galichka tizimi bilan tugmalar yasash
-        markup = types.InlineKeyboardMarkup(row_width=1)
-        
-        txt1 = f"🎬 1-Kanal {'✅' if st['k1'] else '❌'}"
-        txt2 = f"🛍 2-Guruh {'✅' if st['k2'] else '❌'}"
-        
-        btn1 = types.InlineKeyboardButton(txt1, url=f"https://t.me/{KINO_USER}")
-        btn2 = types.InlineKeyboardButton(txt2, url=f"https://t.me/{BOZOR_USER}")
-        btn3 = types.InlineKeyboardButton("🔄 TASDIQLASH", callback_data="recheck")
-        
-        markup.add(btn1, btn2, btn3)
-        bot.send_message(message.chat.id, "🛑 <b>Bot yopiq!</b>\n\nDavom etish uchun ikkala kanalga ham obuna bo'ling va pastdagi tugmani bosing:", reply_markup=markup)
+    manage_user(uid, ref)
+    send_welcome(message.chat.id, uid, message.from_user.first_name)
 
-@bot.callback_query_handler(func=lambda call: call.data == "recheck")
-def recheck(call):
-    st = get_status(call.from_user.id)
+@bot.callback_query_handler(func=lambda call: call.data == "check")
+def handle_check(call):
+    uid = call.from_user.id
+    name = call.from_user.first_name
+    sub = check_sub(uid)
+    refs = get_refs(uid)
     
-    if st["k1"] and st["k2"]:
-        # Agar hammasi ✅ bo'lsa, xabarni o'chirib botni ochish
+    if sub and refs >= REFS_NEEDED:
         bot.delete_message(call.message.chat.id, call.message.message_id)
-        bot.send_message(call.message.chat.id, "🎉 <b>Rahmat!</b> A'zoligingiz tasdiqlandi.")
+        bot.send_message(call.message.chat.id, f"🎉 <b>Assalomu alaykum, {name}!</b>\nBarcha shartlar bajarildi. Bot endi ochiq!")
     else:
-        # KANALGA OTIB YUBORMAYDI! Faqat tepada ogohlantirish beradi
-        bot.answer_callback_query(call.id, "❌ Siz hali barcha kanallarga a'zo emassiz!", show_alert=True)
+        status = (f"<b>Assalomu alaykum, {name}!</b> 👋\n\n"
+                  f"⚠️ <b>Shartlar to'liq bajarilmagan:</b>\n"
+                  f"{'✅' if sub else '❌'} Kanallarga obuna\n"
+                  f"{'✅' if refs >= REFS_NEEDED else '❌'} Do'stlar: {refs}/{REFS_NEEDED}\n\n"
+                  f"<i>Iltimos, shartlarni oxirigacha bajaring!</i>")
         
-        # Tugmalarni yangilash (biriga a'zo bo'lgan bo'lsa ✅ chiqishi uchun)
-        markup = types.InlineKeyboardMarkup(row_width=1)
-        txt1 = f"1-Kanal {'✅' if st['k1'] else '❌'}"
-        txt2 = f"2-Guruh {'✅' if st['k2'] else '❌'}"
-        markup.add(
-            types.InlineKeyboardButton(txt1, url=f"https://t.me/{KINO_USER}"),
-            types.InlineKeyboardButton(txt2, url=f"https://t.me/{BOZOR_USER}"),
-            types.InlineKeyboardButton("🔄 TASDIQLASH", callback_data="recheck")
-        )
+        bot.answer_callback_query(call.id, "Natija yetarli emas!", show_alert=False)
         try:
-            bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id, reply_markup=markup)
+            bot.edit_message_text(status, call.message.chat.id, call.message.message_id, 
+                                  parse_mode="HTML", reply_markup=call.message.reply_markup)
         except:
             pass
 
-print("Bot yoqildi...")
+print("Ishlaydi_bot muvaffaqiyatli ishga tushdi...")
 bot.infinity_polling()
